@@ -1,0 +1,27 @@
+#!/bin/sh
+
+COMMAND="$1" # ls, add, rm, rename, set-url
+REPO="$2"
+
+cd $REPO
+
+if [ "$COMMAND" = "ls" ]; then
+  git remote -v
+elif [ "$COMMAND" = "add" ]; then
+  REMOTE_NAME="$3"
+  REMOTE_URL="$4"
+  git remote add "$REMOTE_NAME" "$REMOTE_URL"
+elif [ "$COMMAND" = "rm" ]; then
+  REMOTE_NAME="$3"
+  git remote remove "$REMOTE_NAME"
+elif [ "$COMMAND" = "set-url" ]; then
+  REMOTE_NAME="$3"
+  REMOTE_URL="$4"
+  git remote set-url "$REMOTE_NAME" "$REMOTE_URL"
+elif [ "$COMMAND" = "rename" ]; then
+  OLD_REMOTE_NAME="$3"
+  NEW_REMOTE_NAME="$4"
+  git remote rename "$OLD_REMOTE_NAME" "$NEW_REMOTE_NAME"
+else
+  echo "Unknown command: $COMMAND"
+fi

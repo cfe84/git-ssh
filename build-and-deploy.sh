@@ -4,22 +4,27 @@ CONTAINER_NAME=gitssh
 CONTAINER_IMAGE=gitssh
 CONTAINER_PORT=22
 EXPOSED_PORT=2222
-FILES=/files/$CONTAINER_NAME
-FILES_REPO=/mnt/storage/git
 NETWORK=gitnet
 
-mkdir -p $FILES/homessh
-mkdir -p $FILES/serverkeys
+if [ -z "$HOST_REPO_DIR" ]; then
+  echo "HOST_REPO_DIR not set - it should point to where git files are stored on the host"
+  exit 1
+fi
 
-echo "Events dir: $EVENTS_DIR"
-echo "Repo root: $REPO_ROOT"
+if [ -z "$CONFIG_DIR" ]; then
+  echo "CONFIG_DIR not set - it should point to where git config files are stored on the host"
+  exit 1
+fi
+
+mkdir -p $CONFIG_DIR/homessh
+mkdir -p $CONFIG_DIR/serverkeys
 
 if [ -z "`docker network list | grep gitssh`" ]; then
   docker network create $CONTAINER_NAME --internal
 fi
 docker build / -t $CONTAINER_IMAGE -f Dockerfile \
-  --build-arg EVENTS_DIR=$EVENTS_DIR \
-  --build-arg REPO_ROOT=$REPO_ROOT
+  --build-arg EVENTS_DIR=/events \
+  --build-arg REPO_ROOT=
 
 if [ $? -ne 0 ]; then
   echo "docker build failed - exiting"
@@ -30,11 +35,11 @@ docker stop $CONTAINER_NAME && docker rm $CONTAINER_NAME
 docker create \
 	--name $CONTAINER_NAME \
 	-p $EXPOSED_PORT:$CONTAINER_PORT \
-  -v $FILES/homessh:/home/git/.ssh \
-  -v $FILES/serverkeys:/etc/ssh \
-  -v $FILES_REPO/public:/public \
-  -v $FILES_REPO/private:/private \
-  -v $FILES_REPO/events:/events \
+  -v $CONFIG_DIR/homessh:/home/git/.ssh \
+  -v $CONFIG_DIR/serverkeys:/etc/ssh \
+  -v $HOST_REPO_DIR/public:/public \
+  -v $HOST_REPO_DIR/private:/private \
+  -v $HOST_REPO_DIR/events:/events \
 	--user git \
 	--restart unless-stopped \
 	$CONTAINER_IMAGE

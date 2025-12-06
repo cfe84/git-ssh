@@ -1,0 +1,8 @@
+#!/bin/sh
+
+if [ -z "$1" ]; then
+    echo "Missing parameter";
+    exit 128;
+fi;
+
+ls "$1"

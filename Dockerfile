@@ -17,10 +17,7 @@ RUN echo "root:x:0:0:root:/root:/user/bin/false" > /etc/passwd \
 RUN echo -e "[init]\n  defaultBranch = main\n[core]\n  hooksPath = /hooks" > /home/git/.gitconfig
 
 # Shell commands
-RUN mkdir /home/git/git-shell-commands && \
- echo -e "#!/bin/sh\nprintf '%s\n' \"Hi! You can't use shell access\"\nexit 128" > /home/git/git-shell-commands/no-interactive-login  && \
- echo -e "#!/bin/sh\ngit init --bare \"\$1\"" > /home/git/git-shell-commands/create-repo && \
- echo -e "#!/bin/sh\nif [ -z \"\$1\" ]; then echo \"Missing parameter\"; exit 128; fi; ls \"\$1\"" > /home/git/git-shell-commands/list
+COPY /src/git-shell-commands/ /home/git/git-shell-commands/
 
 # Copy stuff from gitomatic
 RUN mkdir /hooks/

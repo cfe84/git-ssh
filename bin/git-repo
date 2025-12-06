@@ -1,0 +1,689 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+COLOR_RESET=$'\033[0m'
+COLOR_RED=$'\033[31m'
+COLOR_GREEN=$'\033[32m'
+COLOR_YELLOW=$'\033[33m'
+COLOR_CYAN=$'\033[36m'
+COLOR_WHITE=$'\033[37m'
+
+usage() {
+  cat <<'EOF'
+git-repo - Manage remote git repositories via SSH
+
+git-repo requires scripts installed in the git-shell-command folder
+
+Usage: git-repo <command> [options]
+
+Commands:
+  list | ls List repositories
+  create    Create a new repository
+  clone     Clone a repository
+  remote    Manage remotes on the remote repository
+
+Global Options:
+  -h, --help    Show this help message
+
+Environment Variables:
+  GIT_REPO_ADDRESS    SSH address for the remote git server (e.g., git@example.com)
+
+Examples:
+  git-repo list (or ls)                   # List all repositories
+  git-repo list --visibility private      # List only private repositories
+  git-repo create my-project              # Create a private repository
+  git-repo clone my-project               # Clone a repository (searches both folders)
+  git-repo clone my-project -v private    # Clone from private folder
+  git-repo create my-project --visibility public  # Create a public repository
+  git-repo remote ls                      # List remotes on the current repo
+  git-repo remote add origin ssh://git@github.org/something # Add a remote to the current repo
+  git-repo remote remove origin            # Remove a remote from the current repo
+  git-repo remote rename origin upstream    # Rename a remote in the current repo
+  git-repo remote set-url origin ssh://git@github.org/something # Set remote URL in current repo
+
+Use 'git-repo <command> --help' for more information on a specific command.
+EOF
+}
+
+usage_list() {
+  cat <<'EOF'
+git-repo list - List remote repositories
+
+Usage: git-repo list [options]
+
+Options:
+  -v, --visibility <type>   Filter by visibility (private/public)
+  -h, --help                Show this help message
+
+Examples:
+  git-repo list                      # List all repositories
+  git-repo list -v private           # List only private repositories
+  git-repo list --visibility public  # List only public repositories
+EOF
+}
+
+usage_create() {
+  cat <<'EOF'
+git-repo create - Create a new remote repository
+
+Usage: git-repo create <name> [options]
+
+Arguments:
+  <name>                    Name of the repository to create
+
+Options:
+  -v, --visibility <type>   Set repository visibility (private/public, default: private)
+  -a, --add-remote          Add the created repository as a remote to current git repo
+  -n, --remote-name <name>  Name for the remote (default: origin, requires --add-remote)
+  -h, --help                Show this help message
+
+Examples:
+  git-repo create my-project                    # Create a private repository
+  git-repo create my-project -v public         # Create a public repository
+  git-repo create my-project -a                # Create repo and add as 'origin' remote
+  git-repo create my-project -a -n upstream    # Create repo and add as 'upstream' remote
+EOF
+}
+
+usage_clone() {
+  cat <<'EOF'
+git-repo clone - Clone a remote repository
+
+Usage: git-repo clone <name> [options]
+
+Arguments:
+  <name>                    Name of the repository to clone
+
+Options:
+  -v, --visibility <type>   Specify folder visibility (private/public)
+  -h, --help                Show this help message
+
+Notes:
+  - If no visibility is specified, both public and private folders will be searched
+  - If the repository is found in both folders, you must specify --visibility
+  - Repository name can be with or without .git extension
+EOF
+}
+
+usage_remote() {
+  cat <<'EOF'
+git-repo remote - Manage remotes on a remote repository
+
+Usage: git-repo remote [options] <command> [args]
+
+Commands:
+  ls                      List remotes on the target repository
+  add <name> <url>        Add a remote to the target repository
+  remove|rm <name>        Remove a remote from the target repository
+  rename <old> <new>      Rename a remote on the target repository
+  set-url <name> <url>    Update a remote URL on the target repository
+
+Options:
+  -r, --repo <path>            Explicit repository path (e.g., private/project.git)
+  -v, --visibility <type>      Visibility to use when building the repo path (default: private)
+  -l, --local-remote <name>    Local git remote to derive repo path when --repo is omitted (default: origin)
+  -h, --help                   Show this help message
+
+Notes:
+  - Without --repo, the repository path is derived from the URL of the local remote specified by --local-remote.
+  - Repository paths are expected relative to the git user root (e.g., /public/project.git).
+EOF
+}
+
+die() {
+  printf "%sError: %s%s\n" "$COLOR_RED" "$1" "$COLOR_RESET" >&2
+  exit 1
+}
+
+normalize_repo_name() {
+  local name="$1"
+
+  # Strip leading ./ or /
+  while [[ "$name" == ./* || "$name" == /* ]]; do
+    name="${name#./}"
+    name="${name#/}"
+  done
+
+  # Collapse duplicate slashes
+  while [[ "$name" == *"//"* ]]; do
+    name="${name//\/\//\/}"
+  done
+
+  # Trim trailing slash
+  name="${name%/}"
+
+  # Disallow empty, current dir, or path traversal
+  if [[ -z "$name" || "$name" == "." ]]; then
+    die "Repository name is required"
+  fi
+
+  local part
+  IFS='/' read -r -a parts <<< "$name"
+  for part in "${parts[@]}"; do
+    [[ -z "$part" ]] && die "Repository path cannot contain empty segments"
+    [[ "$part" == ".." ]] && die "Repository path cannot contain '..'"
+  done
+
+  # Append .git to the last segment if missing
+  if [[ "$name" != *.git ]]; then
+    name="${name}.git"
+  fi
+
+  printf "%s" "$name"
+}
+
+normalize_address() {
+  local addr="$1"
+  addr="${addr#ssh://}"
+  addr="${addr%/}"
+  printf "%s" "$addr"
+}
+
+extract_repo_path_from_url() {
+  local remote_url="$1"
+  local normalized_address
+  normalized_address="$(normalize_address "$GIT_REPO_ADDRESS")"
+
+  local url_no_proto="${remote_url#ssh://}"
+  local path=""
+
+  if [[ "$url_no_proto" == "$normalized_address":* ]]; then
+    path="${url_no_proto#${normalized_address}:}"
+  elif [[ "$url_no_proto" == "$normalized_address"/* ]]; then
+    path="${url_no_proto#${normalized_address}}"
+  else
+    return 1
+  fi
+
+  [[ -z "$path" ]] && return 1
+  [[ "$path" != /* ]] && path="/$path"
+  printf "%s" "$path"
+}
+
+require_git_repo() {
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    die "This operation requires being in a git repository"
+  fi
+}
+
+remote_exists() {
+  git remote get-url "$1" >/dev/null 2>&1
+}
+
+repo_exists_in_folder() {
+  local repo_name="$1"
+  local folder="$2"
+  local output
+
+  local dir="${repo_name%/*}"
+  local base="${repo_name##*/}"
+  local list_folder="$folder"
+  if [[ "$dir" != "$repo_name" ]]; then
+    list_folder+="/${dir}"
+  fi
+
+  if ! output=$(ssh "$GIT_REPO_ADDRESS" list "/${list_folder}" 2>/dev/null); then
+    return 1
+  fi
+
+  while IFS= read -r repo; do
+    repo=$(echo "$repo" | xargs)
+    [[ -z "$repo" ]] && continue
+
+    # Accept listings with or without .git and ignore trailing slash markers
+    local repo_clean="${repo%/}"
+    local repo_with_git="$repo_clean"
+    [[ "$repo_with_git" != *.git ]] && repo_with_git+=".git"
+    local base_no_git="${base%.git}"
+
+    if [[ "$repo_clean" == "$base" || "$repo_with_git" == "$base" || "$repo_clean" == "$base_no_git" ]]; then
+      return 0
+    fi
+  done <<< "$output"
+
+  return 1
+}
+
+list_repositories() {
+  local folder="$1"
+  local subpath="${2:-}"
+  if [[ -n "$subpath" ]]; then
+    folder+="/${subpath}"
+  fi
+  local output
+
+  if ! output=$(ssh "$GIT_REPO_ADDRESS" list "/${folder}" 2>&1); then
+    printf "%sError: Failed to list repositories in %s folder: %s%s\n" "$COLOR_RED" "$folder" "$output" "$COLOR_RESET" >&2
+    return 1
+  fi
+
+  if [[ -z "${output//[[:space:]]/}" ]]; then
+    printf "%sNo repositories found in %s folder%s\n" "$COLOR_YELLOW" "$folder" "$COLOR_RESET"
+    return 0
+  fi
+
+  while IFS= read -r repo; do
+    repo=$(echo "$repo" | xargs)
+    [[ -z "$repo" ]] && continue
+    local is_folder=true
+    local repo_name="$repo"
+    if [[ "$repo" == *.git ]]; then
+      is_folder=false
+      repo_name="${repo%.git}"
+    fi
+
+    if [[ "$is_folder" == true ]]; then
+      printf "%s%s/%s - %s%s:/%s/%s%s\n" "$COLOR_YELLOW" "$repo_name" "$COLOR_RESET" "$COLOR_GREEN" "$GIT_REPO_ADDRESS" "$folder" "$repo" "$COLOR_RESET"
+    else
+      printf "%s%s%s - %s%s:/%s/%s%s\n" "$COLOR_WHITE" "$repo_name" "$COLOR_RESET" "$COLOR_GREEN" "$GIT_REPO_ADDRESS" "$folder" "$repo" "$COLOR_RESET"
+    fi
+  done <<< "$output"
+}
+
+create_repository() {
+  local repo_name="$1"
+  local visibility="$2"
+  local add_remote="$3"
+  local remote_name="$4"
+  local create_cmd="create-repo /${visibility}/${repo_name}"
+
+  printf "%s[>] Creating repository '%s' in %s folder...%s\n" "$COLOR_YELLOW" "$repo_name" "$visibility" "$COLOR_RESET"
+
+  if ! ssh "$GIT_REPO_ADDRESS" "$create_cmd"; then
+    printf "%s[!] Failed to create repository%s\n" "$COLOR_RED" "$COLOR_RESET" >&2
+    exit 1
+  fi
+
+  printf "%s[OK] Repository '%s' created successfully!%s\n" "$COLOR_GREEN" "$repo_name" "$COLOR_RESET"
+  printf "%sRepository URL: %s:/%s/%s%s\n" "$COLOR_CYAN" "$GIT_REPO_ADDRESS" "$visibility" "$repo_name" "$COLOR_RESET"
+
+  if [[ "$add_remote" == "true" ]]; then
+    printf "%s[>] Adding remote '%s'...%s\n" "$COLOR_YELLOW" "$remote_name" "$COLOR_RESET"
+    local remote_url="${GIT_REPO_ADDRESS}:/${visibility}/${repo_name}"
+    if git remote add "$remote_name" "$remote_url"; then
+      printf "%s[OK] Remote '%s' added successfully!%s\n" "$COLOR_GREEN" "$remote_name" "$COLOR_RESET"
+    else
+      printf "%s[!] Failed to add remote%s\n" "$COLOR_RED" "$COLOR_RESET" >&2
+      printf "%sNote: Repository was created successfully, but remote was not added%s\n" "$COLOR_YELLOW" "$COLOR_RESET" >&2
+    fi
+  fi
+}
+
+clone_repository() {
+  local repo_name="$1"
+  local visibility="$2"
+
+  if [[ -z "$visibility" ]]; then
+    local found=()
+    for folder in public private; do
+      if repo_exists_in_folder "$repo_name" "$folder"; then
+        found+=("$folder")
+      fi
+    done
+
+    if (( ${#found[@]} == 0 )); then
+      die "Repository '${repo_name}' not found in public or private folders"
+    fi
+
+    if (( ${#found[@]} > 1 )); then
+      printf "%sError: Repository '%s' found in multiple folders:%s\n" "$COLOR_RED" "$repo_name" "$COLOR_RESET" >&2
+      for folder in "${found[@]}"; do
+        printf "%s  - %s%s\n" "$COLOR_YELLOW" "$folder" "$COLOR_RESET" >&2
+      done
+      printf "%sPlease specify visibility with -v/--visibility%s\n" "$COLOR_YELLOW" "$COLOR_RESET" >&2
+      exit 1
+    fi
+
+    visibility="${found[0]}"
+    printf "%s[OK] Found repository in %s folder%s\n" "$COLOR_GREEN" "$visibility" "$COLOR_RESET"
+  else
+    if ! repo_exists_in_folder "$repo_name" "$visibility"; then
+      die "Repository '${repo_name}' not found in ${visibility} folder"
+    fi
+  fi
+
+  local repo_url="${GIT_REPO_ADDRESS}:/${visibility}/${repo_name}"
+  printf "%s[>] Cloning repository from %s...%s\n" "$COLOR_YELLOW" "$repo_url" "$COLOR_RESET"
+
+  if ! git clone "$repo_url"; then
+    die "Failed to clone repository"
+  fi
+
+  printf "%s[OK] Repository cloned successfully!%s\n" "$COLOR_GREEN" "$COLOR_RESET"
+}
+
+handle_list() {
+  local visibility=""
+  local subpath=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -v|--visibility)
+        shift || die "--visibility requires a value (private/public)"
+        visibility="$1"
+        # if [[ "$visibility" != "private" && "$visibility" != "public" ]]; then
+        #   die "--visibility must be either 'private' or 'public'"
+        # fi
+        ;;
+      -h|--help)
+        usage_list
+        exit 0
+        ;;
+      *)
+        if [[ -z "$subpath" ]]; then
+          subpath="$1"
+        else
+          die "Unknown argument '$1'"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$visibility" ]]; then
+    if [[ -n "$subpath" ]]; then
+      die "Listing a subpath requires specifying visibility with -v/--visibility"
+    fi
+    printf "%sListing repositories in public folder of %s:%s\n" "$COLOR_CYAN" "$GIT_REPO_ADDRESS" "$COLOR_RESET"
+    list_repositories "public"
+    echo
+    printf "%sListing repositories in private folder of %s:%s\n" "$COLOR_CYAN" "$GIT_REPO_ADDRESS" "$COLOR_RESET"
+    list_repositories "private"
+  else
+    if [[ -n "$subpath" ]]; then
+      subpath="$(normalize_repo_name "$subpath")"
+      subpath="${subpath%.git}"
+    fi
+    printf "%sListing repositories in %s%s%s folder of %s:%s\n" "$COLOR_CYAN" "$visibility" "${subpath:+/}" "$subpath" "$GIT_REPO_ADDRESS" "$COLOR_RESET"
+    list_repositories "$visibility" "$subpath"
+  fi
+}
+
+handle_create() {
+  local visibility="private"
+  local add_remote="false"
+  local remote_name="origin"
+  local repo_name=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -v|--visibility)
+        shift || die "--visibility requires a value (private/public)"
+        visibility="$1"
+        if [[ "$visibility" != "private" && "$visibility" != "public" ]]; then
+          die "--visibility must be either 'private' or 'public'"
+        fi
+        ;;
+      -a|--add-remote)
+        add_remote="true"
+        ;;
+      -n|--remote-name)
+        shift || die "--remote-name requires a value"
+        remote_name="$1"
+        ;;
+      -h|--help)
+        usage_create
+        exit 0
+        ;;
+      --)
+        shift
+        break
+        ;;
+      -*)
+        die "Unknown argument '$1'"
+        ;;
+      *)
+        if [[ -z "$repo_name" ]]; then
+          repo_name="$1"
+        else
+          die "Unknown argument '$1'"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$repo_name" ]]; then
+    printf "%sError: Repository name is required%s\n" "$COLOR_RED" "$COLOR_RESET" >&2
+    usage_create
+    exit 1
+  fi
+
+  if [[ "$repo_name" == *" "* ]]; then
+    die "Repository name cannot contain spaces"
+  fi
+
+  repo_name="$(normalize_repo_name "$repo_name")"
+
+  if [[ "$add_remote" == "true" ]]; then
+    require_git_repo
+    if remote_exists "$remote_name"; then
+      die "Remote '${remote_name}' already exists in this repository"
+    fi
+  fi
+
+  create_repository "$repo_name" "$visibility" "$add_remote" "$remote_name"
+}
+
+determine_repo_path() {
+  local repo_arg="$1"
+  local visibility="$2"
+  local local_remote="$3"
+
+  if [[ -n "$visibility" && "$visibility" != "private" && "$visibility" != "public" ]]; then
+    die "--visibility must be either 'private' or 'public'"
+  fi
+
+  if [[ -n "$repo_arg" ]]; then
+    local is_absolute=false
+    if [[ "$repo_arg" == /* ]]; then
+      is_absolute=true
+      repo_arg="${repo_arg#/}"
+    fi
+
+    repo_arg="$(normalize_repo_name "$repo_arg")"
+
+    if [[ "$is_absolute" == true ]]; then
+      printf "/%s" "$repo_arg"
+      return 0
+    fi
+
+    if [[ "$repo_arg" == public/* || "$repo_arg" == private/* ]]; then
+      printf "/%s" "$repo_arg"
+    else
+      local folder="${visibility:-private}"
+      printf "/%s/%s" "$folder" "$repo_arg"
+    fi
+    return 0
+  fi
+
+  require_git_repo
+  local remote_url
+  if ! remote_url=$(git remote get-url "$local_remote" 2>/dev/null); then
+    die "Failed to determine repository path: remote '${local_remote}' not found. Use --repo to specify the target repository"
+  fi
+
+  local repo_path
+  if ! repo_path=$(extract_repo_path_from_url "$remote_url"); then
+    die "Failed to determine repository path from remote URL '${remote_url}'. Provide --repo explicitly"
+  fi
+
+  printf "%s" "$repo_path"
+}
+
+run_remote_command() {
+  local repo_path="$1"
+  local subcommand="$2"
+  shift 2 || true
+
+  if ! ssh "$GIT_REPO_ADDRESS" remote "$subcommand" "$repo_path" "$@"; then
+    die "Remote command '${subcommand}' failed for ${repo_path}"
+  fi
+}
+
+handle_clone() {
+  local visibility=""
+  local repo_name=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -v|--visibility)
+        shift || die "--visibility requires a value (private/public)"
+        visibility="$1"
+        if [[ "$visibility" != "private" && "$visibility" != "public" ]]; then
+          die "--visibility must be either 'private' or 'public'"
+        fi
+        ;;
+      -h|--help)
+        usage_clone
+        exit 0
+        ;;
+      *)
+        if [[ -z "$repo_name" ]]; then
+          repo_name="$1"
+        else
+          die "Unknown argument '$1'"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$repo_name" ]]; then
+    printf "%sError: Repository name is required%s\n" "$COLOR_RED" "$COLOR_RESET" >&2
+    usage_clone
+    exit 1
+  fi
+
+  repo_name="$(normalize_repo_name "$repo_name")"
+
+  clone_repository "$repo_name" "$visibility"
+}
+
+handle_remote() {
+  local repo_arg=""
+  local visibility=""
+  local local_remote="origin"
+  local subcommand=""
+  local remaining=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -r|--repo)
+        shift || die "--repo requires a value"
+        repo_arg="$1"
+        ;;
+      -v|--visibility)
+        shift || die "--visibility requires a value (private/public)"
+        visibility="$1"
+        ;;
+      -l|--local-remote)
+        shift || die "--local-remote requires a value"
+        local_remote="$1"
+        ;;
+      -h|--help)
+        usage_remote
+        exit 0
+        ;;
+      ls|list|add|remove|rm|rename|set-url)
+        subcommand="$1"
+        shift
+        remaining=("$@")
+        break
+        ;;
+      *)
+        die "Unknown argument '$1'"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$subcommand" ]]; then
+    usage_remote
+    exit 1
+  fi
+
+  local repo_path
+  repo_path="$(determine_repo_path "$repo_arg" "$visibility" "$local_remote")"
+
+  case "$subcommand" in
+    ls|list)
+      printf "%s[>] Listing remotes for %s...%s\n" "$COLOR_YELLOW" "$repo_path" "$COLOR_RESET"
+      run_remote_command "$repo_path" "ls"
+      ;;
+    add)
+      local remote_name="${remaining[0]:-}"
+      local remote_url="${remaining[1]:-}"
+      [[ -z "$remote_name" || -z "$remote_url" ]] && die "remote add requires <name> and <url>"
+      printf "%s[>] Adding remote '%s' on %s...%s\n" "$COLOR_YELLOW" "$remote_name" "$repo_path" "$COLOR_RESET"
+      run_remote_command "$repo_path" "add" "$remote_name" "$remote_url"
+      printf "%s[OK] Remote added%s\n" "$COLOR_GREEN" "$COLOR_RESET"
+      ;;
+    remove|rm)
+      local remote_name="${remaining[0]:-}"
+      [[ -z "$remote_name" ]] && die "remote remove requires <name>"
+      printf "%s[>] Removing remote '%s' from %s...%s\n" "$COLOR_YELLOW" "$remote_name" "$repo_path" "$COLOR_RESET"
+      run_remote_command "$repo_path" "rm" "$remote_name"
+      printf "%s[OK] Remote removed%s\n" "$COLOR_GREEN" "$COLOR_RESET"
+      ;;
+    rename)
+      local old_name="${remaining[0]:-}"
+      local new_name="${remaining[1]:-}"
+      [[ -z "$old_name" || -z "$new_name" ]] && die "remote rename requires <old> and <new>"
+      printf "%s[>] Renaming remote '%s' to '%s' on %s...%s\n" "$COLOR_YELLOW" "$old_name" "$new_name" "$repo_path" "$COLOR_RESET"
+      run_remote_command "$repo_path" "rename" "$old_name" "$new_name"
+      printf "%s[OK] Remote renamed%s\n" "$COLOR_GREEN" "$COLOR_RESET"
+      ;;
+    set-url)
+      local remote_name="${remaining[0]:-}"
+      local remote_url="${remaining[1]:-}"
+      [[ -z "$remote_name" || -z "$remote_url" ]] && die "remote set-url requires <name> and <url>"
+      printf "%s[>] Updating URL for remote '%s' on %s...%s\n" "$COLOR_YELLOW" "$remote_name" "$repo_path" "$COLOR_RESET"
+      run_remote_command "$repo_path" "set-url" "$remote_name" "$remote_url"
+      printf "%s[OK] Remote URL updated%s\n" "$COLOR_GREEN" "$COLOR_RESET"
+      ;;
+    *)
+      die "Unknown remote subcommand '$subcommand'"
+      ;;
+  esac
+}
+
+main() {
+  if [[ -z "${GIT_REPO_ADDRESS:-}" ]]; then
+    printf "%sError: GIT_REPO_ADDRESS environment variable is not set%s\n" "$COLOR_RED" "$COLOR_RESET" >&2
+    exit 1
+  fi
+
+  if [[ $# -lt 1 ]]; then
+    usage
+    exit 1
+  fi
+
+  local command="$1"
+  shift || true
+
+  case "$command" in
+    list|ls)
+      handle_list "$@"
+      ;;
+    create)
+      handle_create "$@"
+      ;;
+    clone)
+      handle_clone "$@"
+      ;;
+    remote)
+      handle_remote "$@"
+      ;;
+    -h|--help)
+      usage
+      ;;
+    *)
+      printf "%sError: Unknown command '%s'%s\n" "$COLOR_RED" "$command" "$COLOR_RESET" >&2
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

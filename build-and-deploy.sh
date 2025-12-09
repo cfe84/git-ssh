@@ -3,8 +3,11 @@
 CONTAINER_NAME=gitssh
 CONTAINER_IMAGE=gitssh
 CONTAINER_PORT=22
-EXPOSED_PORT=2222
 NETWORK=gitnet
+
+if [ -z "$EXPOSED_PORT" ]; then
+  EXPOSED_PORT=2222
+fi
 
 if [ -z "$HOST_REPO_DIR" ]; then
   echo "HOST_REPO_DIR not set - it should point to where git files are stored on the host"

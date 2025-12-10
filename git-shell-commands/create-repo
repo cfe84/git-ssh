@@ -1,2 +1,4 @@
 #!/bin/sh
 git init --bare "$1"
+mkdir -p "$1/build"
+mkdir -p "$1/build/logs"

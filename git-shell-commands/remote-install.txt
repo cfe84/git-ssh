@@ -1,0 +1,50 @@
+#!/bin/bash
+
+if [ -z "$GIT_REPO_ADDRESS" ]; then
+  echo "Error: GIT_REPO_ADDRESS environment variable is not set. Set it first to your repo then try again. It should look like this: user@hostname"
+  exit 1
+fi
+
+SSH="ssh $GIT_REPO_ADDRESS"
+REPO="/public/git-ssh.git"
+ 
+echo "... Validating that repository $REPO exists on $GIT_REPO_ADDRESS"
+EXISTS="`$SSH exists "$REPO"`"
+if [ $? -ne 0 ]; then
+  echo "Error: Unable to connect to $GIT_REPO_ADDRESS via SSH. Check that '$GIT_REPO_ADDRESS' is correct. Check your port as well"
+  exit 1
+fi
+echo "✔️ Connection successful."
+if [ "$EXISTS" != "true" ]; then
+  echo "Error: Repository $REPO does not exist on $GIT_REPO_ADDRESS"
+  exit 1
+fi
+echo "✔️ Repository exists."
+
+GIT_REPO=`$SSH cat-file "$REPO" --textconv HEAD:bin/git-repo`
+if [ -z "$GIT_REPO" ]; then
+  echo "Error: Unable to read git-repo file from $REPO"
+  exit 1
+fi
+echo "✔️ Retrieved install script."
+
+TARGET="$HOME/bin"
+if [ ! -d "$TARGET" ]; then
+  TARGET="$HOME/.local/bin"
+  if [ ! -d "$TARGET" ]; then
+    echo "Error: Neither $HOME/bin nor $HOME/.local/bin directories exist. Please create one of them, add to path, and try again."
+    exit 1
+  fi
+fi
+echo "... Installing git-repo to $TARGET/git-repo"
+echo "$GIT_REPO" > "$TARGET/git-repo"
+chmod +x "$TARGET/git-repo"
+
+# validate that it's in the path:
+if ! command -v git-repo &> /dev/null; then
+  echo "⚠️ Warning: git-repo command not found in PATH. You may need to restart your terminal or add $TARGET to your PATH."
+else
+  echo "✔️ git-repo command is available in PATH."
+fi
+
+echo "✅ Installation in $TARGET complete. You can now use 'git repo' commands."

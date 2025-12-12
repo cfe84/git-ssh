@@ -1,0 +1,9 @@
+#!/bin/bash
+
+REPO="$1"
+shift
+
+cd "$REPO"
+
+git cat-file "$@"
+

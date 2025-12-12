@@ -1,0 +1,3 @@
+#!/bin/bash
+
+cat git-shell-commands/remote-install.txt

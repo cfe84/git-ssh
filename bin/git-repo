@@ -35,6 +35,8 @@ Examples:
   git-repo clone my-project               # Clone a repository (searches both folders)
   git-repo clone my-project -v private    # Clone from private folder
   git-repo create my-project --visibility public  # Create a public repository
+  git-repo catfile --text-conv HEAD:readme.md # Show README from remote repo
+  git-repo catfile --text-conv HEAD:readme.md # Show README from remote repo
   git-repo remote ls                      # List remotes on the current repo
   git-repo remote add origin ssh://git@github.org/something # Add a remote to the current repo
   git-repo remote remove origin            # Remove a remote from the current repo
@@ -648,6 +650,38 @@ handle_remote() {
   esac
 }
 
+handle_catfile() {
+  REPO=""
+  VISIBILITY=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -r|--repo)
+        shift || die "--repo requires a value"
+        REPO="$1"
+        ;;
+      -v|--visibility)
+        shift || die "--visibility requires a value (private/public)"
+        VISIBILITY="$1"
+        ;;
+      --)
+        shift
+        break
+        ;;
+      *)
+        break
+        ;;
+    esac
+    shift
+  done
+
+  local repo_path
+  repo_path="$(determine_repo_path "$REPO" "$VISIBILITY" "origin")"
+
+  if ! ssh "$GIT_REPO_ADDRESS" cat-file "$repo_path" "$@"; then
+    die "cat-file command failed for ${repo_path}"
+  fi
+}
+
 main() {
   if [[ -z "${GIT_REPO_ADDRESS:-}" ]]; then
     printf "%sError: GIT_REPO_ADDRESS environment variable is not set%s\n" "$COLOR_RED" "$COLOR_RESET" >&2
@@ -674,6 +708,9 @@ main() {
       ;;
     remote)
       handle_remote "$@"
+      ;;
+    catfile)
+      handle_catfile "$@"
       ;;
     -h|--help)
       usage

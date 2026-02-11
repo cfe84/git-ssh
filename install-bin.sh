@@ -1,3 +1,3 @@
 #!/bin/bash
 
-cp bin/git-repo ~/bin/
+cp bin/* "$HOME/bin/"

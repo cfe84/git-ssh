@@ -1,0 +1,7 @@
+#!/bin/bash
+
+REPO="$1"
+SPEC="$2"
+
+cd "$REPO"
+git show "$SPEC"

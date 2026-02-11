@@ -42,6 +42,7 @@ Examples:
   git-repo remote remove origin            # Remove a remote from the current repo
   git-repo remote rename origin upstream    # Rename a remote in the current repo
   git-repo remote set-url origin ssh://git@github.org/something # Set remote URL in current repo
+  git-repo browse my-project [HEAD|commit] # Browse files in a repo at a given commit
 
 Use 'git-repo <command> --help' for more information on a specific command.
 EOF
@@ -711,6 +712,9 @@ main() {
       ;;
     catfile)
       handle_catfile "$@"
+      ;;
+    browse)
+      git-repo-browse "$@"
       ;;
     -h|--help)
       usage

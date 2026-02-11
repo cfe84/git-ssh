@@ -1,0 +1,57 @@
+#!/bin/bash
+
+REPO="$1"
+
+if [ ! -d "$REPO" ]; then
+  echo "Repo $REPO does not exist"
+  exit 1
+fi
+
+cd "$REPO"
+
+COMMIT="HEAD"
+while true; do
+  if ! IFS= read -r COMMAND; then
+    # FIFO hit EOF; wait for the next writer
+    continue
+  fi
+
+  # Ignore empty lines
+  [ -z "$COMMAND" ] && continue
+
+  case "$COMMAND" in
+    "log")
+      git log --oneline
+      ;;
+    "commit")
+      if ! IFS= read -r COMMIT; then
+        continue
+      fi
+      ;;
+    "ls-tree")
+      git ls-tree "$COMMIT"
+      ;;
+    "ls-tree -r")
+      git ls-tree -r "$COMMIT"
+      ;;
+    "cat-file")
+      if ! IFS= read -r FILE; then
+        continue
+      fi
+      git --no-pager cat-file "$COMMIT" "$FILE"
+      ;;
+    "show")
+      if ! IFS= read -r SPEC; then
+        continue
+      fi
+      git --no-pager show "$SPEC"
+      ;;
+    "exit")
+      echo "Goodbye"
+      exit 0
+      ;;
+    *)
+      echo "Unknown command '$COMMAND'"
+      ;;
+    esac
+done

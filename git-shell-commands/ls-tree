@@ -1,0 +1,7 @@
+#!/bin/bash
+
+REPO="$1"
+COMMIT="$2"
+
+cd "$REPO"
+git ls-tree -r "$COMMIT"

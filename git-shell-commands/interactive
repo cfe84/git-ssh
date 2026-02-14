@@ -9,6 +9,8 @@ fi
 
 cd "$REPO"
 
+END_MARKER="__END__"
+
 COMMIT="HEAD"
 while true; do
   if ! IFS= read -r COMMAND; then
@@ -34,6 +36,10 @@ while true; do
     "ls-tree -r")
       git ls-tree -r "$COMMIT"
       ;;
+    ls-tree\ *)
+      TREE_PATH="${COMMAND#ls-tree }"
+      git ls-tree "$COMMIT" "$TREE_PATH"
+      ;;
     "cat-file")
       if ! IFS= read -r FILE; then
         continue
@@ -54,4 +60,5 @@ while true; do
       echo "Unknown command '$COMMAND'"
       ;;
     esac
+  echo "$END_MARKER"
 done

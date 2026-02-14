@@ -9,26 +9,26 @@ COLOR_CYAN=$'\033[36m'
 COLOR_WHITE=$'\033[37m'
 
 usage() {
-  cat <<'EOF'
-git-repo - Manage remote git repositories via SSH
+  cat <<EOF
+${COLOR_CYAN}git-repo${COLOR_RESET} - Manage remote git repositories via SSH
 
 git-repo requires scripts installed in the git-shell-command folder
 
-Usage: git-repo <command> [options]
+${COLOR_YELLOW}Usage:${COLOR_RESET} git-repo <command> [options]
 
-Commands:
-  list | ls List repositories
-  create    Create a new repository
-  clone     Clone a repository
-  remote    Manage remotes on the remote repository
+${COLOR_YELLOW}Commands:${COLOR_RESET}
+  ${COLOR_GREEN}list | ls${COLOR_RESET} List repositories
+  ${COLOR_GREEN}create${COLOR_RESET}    Create a new repository
+  ${COLOR_GREEN}clone${COLOR_RESET}     Clone a repository
+  ${COLOR_GREEN}remote${COLOR_RESET}    Manage remotes on the remote repository
 
-Global Options:
-  -h, --help    Show this help message
+${COLOR_YELLOW}Global Options:${COLOR_RESET}
+  ${COLOR_GREEN}-h, --help${COLOR_RESET}    Show this help message
 
-Environment Variables:
-  GIT_REPO_ADDRESS    SSH address for the remote git server (e.g., git@example.com)
+${COLOR_YELLOW}Environment Variables:${COLOR_RESET}
+  ${COLOR_GREEN}GIT_REPO_ADDRESS${COLOR_RESET}    SSH address for the remote git server (e.g., git@example.com)
 
-Examples:
+${COLOR_YELLOW}Examples:${COLOR_RESET}
   git-repo list (or ls)                   # List all repositories
   git-repo list --visibility private      # List only private repositories
   git-repo create my-project              # Create a private repository
@@ -49,16 +49,16 @@ EOF
 }
 
 usage_list() {
-  cat <<'EOF'
-git-repo list - List remote repositories
+  cat <<EOF
+${COLOR_CYAN}git-repo list${COLOR_RESET} - List remote repositories
 
-Usage: git-repo list [options]
+${COLOR_YELLOW}Usage:${COLOR_RESET} git-repo list [options]
 
-Options:
-  -v, --visibility <type>   Filter by visibility (private/public)
-  -h, --help                Show this help message
+${COLOR_YELLOW}Options:${COLOR_RESET}
+  ${COLOR_GREEN}-v, --visibility <type>${COLOR_RESET}   Filter by visibility (private/public)
+  ${COLOR_GREEN}-h, --help${COLOR_RESET}                Show this help message
 
-Examples:
+${COLOR_YELLOW}Examples:${COLOR_RESET}
   git-repo list                      # List all repositories
   git-repo list -v private           # List only private repositories
   git-repo list --visibility public  # List only public repositories
@@ -66,21 +66,21 @@ EOF
 }
 
 usage_create() {
-  cat <<'EOF'
-git-repo create - Create a new remote repository
+  cat <<EOF
+${COLOR_CYAN}git-repo create${COLOR_RESET} - Create a new remote repository
 
-Usage: git-repo create <name> [options]
+${COLOR_YELLOW}Usage:${COLOR_RESET} git-repo create <name> [options]
 
-Arguments:
-  <name>                    Name of the repository to create
+${COLOR_YELLOW}Arguments:${COLOR_RESET}
+  ${COLOR_GREEN}<name>${COLOR_RESET}                    Name of the repository to create
 
-Options:
-  -v, --visibility <type>   Set repository visibility (private/public, default: private)
-  -a, --add-remote          Add the created repository as a remote to current git repo
-  -n, --remote-name <name>  Name for the remote (default: origin, requires --add-remote)
-  -h, --help                Show this help message
+${COLOR_YELLOW}Options:${COLOR_RESET}
+  ${COLOR_GREEN}-v, --visibility <type>${COLOR_RESET}   Set repository visibility (private/public, default: private)
+  ${COLOR_GREEN}-a, --add-remote${COLOR_RESET}          Add the created repository as a remote to current git repo
+  ${COLOR_GREEN}-n, --remote-name <name>${COLOR_RESET}  Name for the remote (default: origin, requires --add-remote)
+  ${COLOR_GREEN}-h, --help${COLOR_RESET}                Show this help message
 
-Examples:
+${COLOR_YELLOW}Examples:${COLOR_RESET}
   git-repo create my-project                    # Create a private repository
   git-repo create my-project -v public         # Create a public repository
   git-repo create my-project -a                # Create repo and add as 'origin' remote
@@ -89,19 +89,19 @@ EOF
 }
 
 usage_clone() {
-  cat <<'EOF'
-git-repo clone - Clone a remote repository
+  cat <<EOF
+${COLOR_CYAN}git-repo clone${COLOR_RESET} - Clone a remote repository
 
-Usage: git-repo clone <name> [options]
+${COLOR_YELLOW}Usage:${COLOR_RESET} git-repo clone <name> [options]
 
-Arguments:
-  <name>                    Name of the repository to clone
+${COLOR_YELLOW}Arguments:${COLOR_RESET}
+  ${COLOR_GREEN}<name>${COLOR_RESET}                    Name of the repository to clone
 
-Options:
-  -v, --visibility <type>   Specify folder visibility (private/public)
-  -h, --help                Show this help message
+${COLOR_YELLOW}Options:${COLOR_RESET}
+  ${COLOR_GREEN}-v, --visibility <type>${COLOR_RESET}   Specify folder visibility (private/public)
+  ${COLOR_GREEN}-h, --help${COLOR_RESET}                Show this help message
 
-Notes:
+${COLOR_YELLOW}Notes:${COLOR_RESET}
   - If no visibility is specified, both public and private folders will be searched
   - If the repository is found in both folders, you must specify --visibility
   - Repository name can be with or without .git extension
@@ -109,25 +109,25 @@ EOF
 }
 
 usage_remote() {
-  cat <<'EOF'
-git-repo remote - Manage remotes on a remote repository
+  cat <<EOF
+${COLOR_CYAN}git-repo remote${COLOR_RESET} - Manage remotes on a remote repository
 
-Usage: git-repo remote [options] <command> [args]
+${COLOR_YELLOW}Usage:${COLOR_RESET} git-repo remote [options] <command> [args]
 
-Commands:
-  ls                      List remotes on the target repository
-  add <name> <url>        Add a remote to the target repository
-  remove|rm <name>        Remove a remote from the target repository
-  rename <old> <new>      Rename a remote on the target repository
-  set-url <name> <url>    Update a remote URL on the target repository
+${COLOR_YELLOW}Commands:${COLOR_RESET}
+  ${COLOR_GREEN}ls${COLOR_RESET}                      List remotes on the target repository
+  ${COLOR_GREEN}add <name> <url>${COLOR_RESET}        Add a remote to the target repository
+  ${COLOR_GREEN}remove|rm <name>${COLOR_RESET}        Remove a remote from the target repository
+  ${COLOR_GREEN}rename <old> <new>${COLOR_RESET}      Rename a remote on the target repository
+  ${COLOR_GREEN}set-url <name> <url>${COLOR_RESET}    Update a remote URL on the target repository
 
-Options:
-  -r, --repo <path>            Explicit repository path (e.g., private/project.git)
-  -v, --visibility <type>      Visibility to use when building the repo path (default: private)
-  -l, --local-remote <name>    Local git remote to derive repo path when --repo is omitted (default: origin)
-  -h, --help                   Show this help message
+${COLOR_YELLOW}Options:${COLOR_RESET}
+  ${COLOR_GREEN}-r, --repo <path>${COLOR_RESET}            Explicit repository path (e.g., private/project.git)
+  ${COLOR_GREEN}-v, --visibility <type>${COLOR_RESET}      Visibility to use when building the repo path (default: private)
+  ${COLOR_GREEN}-l, --local-remote <name>${COLOR_RESET}    Local git remote to derive repo path when --repo is omitted (default: origin)
+  ${COLOR_GREEN}-h, --help${COLOR_RESET}                   Show this help message
 
-Notes:
+${COLOR_YELLOW}Notes:${COLOR_RESET}
   - Without --repo, the repository path is derived from the URL of the local remote specified by --local-remote.
   - Repository paths are expected relative to the git user root (e.g., /public/project.git).
 EOF

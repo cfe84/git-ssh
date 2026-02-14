@@ -2,32 +2,308 @@
 
 set -euo pipefail
 
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+RED=$'\033[0;31m'
+GREEN=$'\033[0;32m'
+YELLOW=$'\033[1;33m'
+BLUE=$'\033[0;34m'
+CYAN=$'\033[0;36m'
+WHITE=$'\033[0;37m'
+BOLD=$'\033[1m'
+NC=$'\033[0m'
 
-function print_success() {
-    echo -e "${GREEN}✓ $1${NC}"
+DIR_COLOR="${YELLOW}"
+FILE_COLOR="${WHITE}"
+BACK_COLOR="${CYAN}"
+END_MARKER="__END__"
+
+die() {
+  printf "%sError: %s%s\n" "$RED" "$1" "$NC" >&2
+  exit 1
 }
 
-function print_error() {
-    echo -e "${RED}✗ $1${NC}" >&2
+# --- Repo selection (no argument) ---
+select_repo() {
+  local visibility="${1:-}"
+  local subpath="${2:-}"
+
+  local ls_args=(ls)
+  if [[ -n "$visibility" ]]; then
+    ls_args+=(-v "$visibility")
+  fi
+  if [[ -n "$subpath" ]]; then
+    ls_args+=("$subpath")
+  fi
+
+  echo -e "${YELLOW}Fetching repositories...${NC}" >&2
+  local ls_output
+  ls_output="$(git repo "${ls_args[@]}" 2>&1)" || die "Failed to list repositories"
+
+  local keys=()
+  local labels=()
+
+  while IFS= read -r line; do
+    local stripped
+    stripped="$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g')"
+    if [[ "$stripped" =~ ^([^ ]+)\ -\ (.+)$ ]]; then
+      local name="${BASH_REMATCH[1]}"
+      local url="${BASH_REMATCH[2]}"
+      if [[ "$name" == */ ]]; then
+        # Folder entry — derive the visibility and subpath from the URL
+        # URL looks like: git@host:/private/infra
+        local folder_path="${url##*:}"
+        folder_path="${folder_path#/}"
+        keys+=("folder:${folder_path}")
+        labels+=("$line")
+      else
+        keys+=("$url")
+        labels+=("$line")
+      fi
+    fi
+  done <<< "$ls_output"
+
+  if [[ ${#keys[@]} -eq 0 ]]; then
+    die "No repositories found"
+  fi
+
+  # Add back option if browsing a subfolder
+  local shelect_keys=()
+  local shelect_labels=()
+  if [[ -n "$subpath" ]]; then
+    shelect_keys+=("..")
+    shelect_labels+=("${BACK_COLOR}⮜  ..${NC}")
+  fi
+  shelect_keys+=("${keys[@]}")
+  shelect_labels+=("${labels[@]}")
+
+  local shelect_args=(-a)
+  for i in "${!shelect_keys[@]}"; do
+    shelect_args+=("${shelect_keys[$i]}" "${shelect_labels[$i]}")
+  done
+
+  local selected
+  selected="$(shelect "${shelect_args[@]}")" || exit 0
+
+  if [[ "$selected" == ".." ]]; then
+    # Go up: remove last subpath segment
+    if [[ -n "$subpath" ]]; then
+      local parent
+      parent="$(dirname "$subpath")"
+      [[ "$parent" == "." ]] && parent=""
+      select_repo "$visibility" "$parent"
+    else
+      select_repo "" ""
+    fi
+  elif [[ "$selected" == folder:* ]]; then
+    # Navigate into folder
+    local folder_path="${selected#folder:}"
+    # folder_path is like "private/infra" — split into visibility + subpath
+    local folder_vis="${folder_path%%/*}"
+    local folder_sub="${folder_path#*/}"
+    [[ "$folder_sub" == "$folder_path" ]] && folder_sub=""
+    select_repo "$folder_vis" "$folder_sub"
+  else
+    echo "$selected"
+  fi
 }
 
-function print_warning() {
-    echo -e "${YELLOW}⚠ $1${NC}" >&2
+# --- Interactive session management ---
+TMPDIR_SESSION=""
+SSH_PID=""
+
+cleanup() {
+  if [[ -n "$SSH_PID" ]]; then
+    kill "$SSH_PID" 2>/dev/null || true
+    wait "$SSH_PID" 2>/dev/null || true
+  fi
+  # Close FD 3 if open
+  exec 3>&- 2>/dev/null || true
+  if [[ -n "$TMPDIR_SESSION" ]]; then
+    rm -rf "$TMPDIR_SESSION"
+  fi
+}
+trap cleanup EXIT
+
+start_session() {
+  local repo_path="$1"
+  echo "${GREEN}Browsing repository: $repo_path${NC}"
+
+  TMPDIR_SESSION="$(mktemp -d)"
+  local input_fifo="$TMPDIR_SESSION/input"
+  local output_fifo="$TMPDIR_SESSION/output"
+  mkfifo "$input_fifo"
+  mkfifo "$output_fifo"
+
+  ssh "$GIT_REPO_ADDRESS" interactive "$repo_path" < "$input_fifo" > "$output_fifo" 2>/dev/null &
+  SSH_PID=$!
+
+  # Keep the input FIFO open for the lifetime of the session
+  exec 3>"$input_fifo"
+  # Open output FIFO on FD 4 to keep it open
+  exec 4<"$output_fifo"
 }
 
-function print_info() {
-    echo -e "${BLUE}ℹ $1${NC}"
+send_command() {
+  echo "$1" >&3
 }
 
-function print_header() {
-    echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}$1${NC}"
-    echo -e "${BLUE}========================================${NC}"
+# Read output lines until the END_MARKER into REPLY_LINES array
+read_output() {
+  REPLY_LINES=()
+  while IFS= read -r line <&4; do
+    [[ "$line" == "$END_MARKER" ]] && break
+    REPLY_LINES+=("$line")
+  done
 }
 
+# --- Browsing ---
+browse() {
+  local repo_path="$1"
+  local current_path=""
+
+  start_session "$repo_path"
+
+  while true; do
+    # Request directory listing
+    if [[ -z "$current_path" ]]; then
+      send_command "ls-tree"
+    else
+      send_command "ls-tree ${current_path}"
+    fi
+
+    # Read ls-tree output
+    read_output
+    local entries=("${REPLY_LINES[@]}")
+
+    if [[ ${#entries[@]} -eq 0 ]]; then
+      echo "Empty directory"
+      if [[ -z "$current_path" ]]; then
+        break
+      fi
+      current_path="$(dirname "$current_path")"
+      [[ "$current_path" == "." ]] && current_path=""
+      continue
+    fi
+
+    # Build shelect arguments
+    local shelect_keys=()
+    local shelect_labels=()
+
+    # Add back option if not at root
+    if [[ -n "$current_path" ]]; then
+      shelect_keys+=("..")
+      shelect_labels+=("${BACK_COLOR}⮜  ..${NC}")
+    fi
+
+    for entry in "${entries[@]}"; do
+      local entry_type entry_name
+      entry_type="$(echo "$entry" | awk '{print $2}')"
+      entry_name="$(echo "$entry" | awk -F'\t' '{print $2}')"
+
+      local display_name="${entry_name##*/}"
+
+      if [[ "$entry_type" == "tree" ]]; then
+        shelect_keys+=("tree:${entry_name}")
+        shelect_labels+=("${DIR_COLOR}📁 ${display_name}/${NC}")
+      else
+        shelect_keys+=("blob:${entry_name}")
+        shelect_labels+=("${FILE_COLOR}📄 ${display_name}${NC}")
+      fi
+    done
+
+    # Add quit option
+    shelect_keys+=("quit")
+    shelect_labels+=("${RED}✕  Quit${NC}")
+
+    # Display current path header
+    local display_path="/"
+    [[ -n "$current_path" ]] && display_path="/${current_path}"
+    echo -e "${BOLD}${CYAN}${repo_path}${NC} ${BLUE}${display_path}${NC}"
+    echo ""
+
+    # Let user select
+    local shelect_args=(-a)
+    for i in "${!shelect_keys[@]}"; do
+      shelect_args+=("${shelect_keys[$i]}" "${shelect_labels[$i]}")
+    done
+
+    local selected
+    selected="$(shelect "${shelect_args[@]}")" || break
+
+    case "$selected" in
+      "..")
+        current_path="$(dirname "$current_path")"
+        [[ "$current_path" == "." ]] && current_path=""
+        ;;
+      tree:*)
+        current_path="${selected#tree:}"
+        # Ensure trailing slash for ls-tree path
+        [[ "$current_path" != */ ]] && current_path="${current_path}/"
+        ;;
+      blob:*)
+        local file_path="${selected#blob:}"
+        send_command "show"
+        send_command "HEAD:${file_path}"
+
+        read_output
+        printf '%s\n' "${REPLY_LINES[@]}" | less -R
+        ;;
+      "quit")
+        break
+        ;;
+    esac
+
+    clear
+  done
+
+  send_command "exit"
+}
+
+# --- Main ---
+if [[ -z "${GIT_REPO_ADDRESS:-}" ]]; then
+  die "GIT_REPO_ADDRESS environment variable is not set"
+fi
+
+REPO_URL=""
+VISIBILITY=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --private)
+      VISIBILITY="private"
+      ;;
+    --public)
+      VISIBILITY="public"
+      ;;
+    -h|--help)
+      echo "Usage: git-repo-browse [--private|--public] [repo-name-or-url]"
+      exit 0
+      ;;
+    *)
+      if [[ -z "$REPO_URL" ]]; then
+        REPO_URL="$1"
+      else
+        die "Unknown argument '$1'"
+      fi
+      ;;
+  esac
+  shift
+done
+
+if [[ -z "$REPO_URL" ]]; then
+  REPO_URL="$(select_repo "$VISIBILITY")" || exit 0
+fi
+
+if [[ -z "$REPO_URL" ]]; then
+  exit 0
+fi
+
+# Extract the repo path from the URL (e.g., git@host:/public/repo.git -> /public/repo.git)
+REPO_PATH=""
+if [[ "$REPO_URL" == *:* ]]; then
+  REPO_PATH="${REPO_URL##*:}"
+else
+  REPO_PATH="$REPO_URL"
+fi
+
+browse "$REPO_PATH"
 

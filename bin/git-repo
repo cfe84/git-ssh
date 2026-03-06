@@ -21,6 +21,7 @@ ${COLOR_YELLOW}Commands:${COLOR_RESET}
   ${COLOR_GREEN}create${COLOR_RESET}    Create a new repository
   ${COLOR_GREEN}clone${COLOR_RESET}     Clone a repository
   ${COLOR_GREEN}remote${COLOR_RESET}    Manage remotes on the remote repository
+  ${COLOR_GREEN}keys${COLOR_RESET}      Manage authorized SSH keys
 
 ${COLOR_YELLOW}Global Options:${COLOR_RESET}
   ${COLOR_GREEN}-h, --help${COLOR_RESET}    Show this help message
@@ -42,6 +43,10 @@ ${COLOR_YELLOW}Examples:${COLOR_RESET}
   git-repo remote remove origin            # Remove a remote from the current repo
   git-repo remote rename origin upstream    # Rename a remote in the current repo
   git-repo remote set-url origin ssh://git@github.org/something # Set remote URL in current repo
+  git-repo keys list                       # List authorized SSH keys
+  git-repo keys add -f ~/.ssh/id_ed25519.pub  # Add key from file
+  git-repo keys add 'ssh-ed25519 AAAA... me@host'  # Add key inline
+  git-repo keys remove myhost              # Remove key matching 'myhost'
   git-repo browse my-project [HEAD|commit] # Browse files in a repo at a given commit
 
 Use 'git-repo <command> --help' for more information on a specific command.
@@ -105,6 +110,28 @@ ${COLOR_YELLOW}Notes:${COLOR_RESET}
   - If no visibility is specified, both public and private folders will be searched
   - If the repository is found in both folders, you must specify --visibility
   - Repository name can be with or without .git extension
+EOF
+}
+
+usage_keys() {
+  cat <<EOF
+${COLOR_CYAN}git-repo keys${COLOR_RESET} - Manage authorized SSH keys
+
+${COLOR_YELLOW}Usage:${COLOR_RESET} git-repo keys <command> [args]
+
+${COLOR_YELLOW}Commands:${COLOR_RESET}
+  ${COLOR_GREEN}list | ls${COLOR_RESET}          List authorized keys
+  ${COLOR_GREEN}add <key>${COLOR_RESET}           Add a public key (inline or from file with -f)
+  ${COLOR_GREEN}remove <id>${COLOR_RESET}        Remove a key by comment or key data substring
+
+${COLOR_YELLOW}Options:${COLOR_RESET}
+  ${COLOR_GREEN}-h, --help${COLOR_RESET}   Show this help message
+
+${COLOR_YELLOW}Examples:${COLOR_RESET}
+  git-repo keys list                       # List authorized SSH keys
+  git-repo keys add -f ~/.ssh/id_ed25519.pub  # Add key from file
+  git-repo keys add 'ssh-ed25519 AAAA... me@host'  # Add key inline
+  git-repo keys remove myhost              # Remove key matching 'myhost'
 EOF
 }
 
@@ -651,6 +678,104 @@ handle_remote() {
   esac
 }
 
+handle_keys() {
+  local subcommand=""
+  local remaining=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -h|--help)
+        usage_keys
+        exit 0
+        ;;
+      list|ls)
+        subcommand="list"
+        ;;
+      add)
+        subcommand="add"
+        shift
+        remaining=("$@")
+        break
+        ;;
+      remove|rm)
+        subcommand="remove"
+        shift
+        remaining=("$@")
+        break
+        ;;
+      *)
+        die "Unknown argument '$1'"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ -z "$subcommand" ]]; then
+    usage_keys
+    exit 1
+  fi
+
+  case "$subcommand" in
+    list)
+      printf "%s[>] Listing authorized keys on %s...%s\n" "$COLOR_YELLOW" "$GIT_REPO_ADDRESS" "$COLOR_RESET"
+      local output
+      if ! output=$(ssh "$GIT_REPO_ADDRESS" keys ls 2>&1); then
+        die "Failed to list keys: $output"
+      fi
+
+      if [[ -z "${output//[[:space:]]/}" ]]; then
+        printf "%sNo authorized keys found%s\n" "$COLOR_YELLOW" "$COLOR_RESET"
+        return 0
+      fi
+
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        local key_type key_data key_comment
+        key_type=$(echo "$line" | awk '{print $1}')
+        key_data=$(echo "$line" | awk '{print $2}')
+        key_comment=$(echo "$line" | awk '{$1=""; $2=""; print}' | xargs)
+
+        if [[ -n "$key_comment" ]]; then
+          printf "%s%s%s %s (%s)\n" "$COLOR_GREEN" "$key_comment" "$COLOR_RESET" "$COLOR_WHITE$key_type$COLOR_RESET" "${key_data:0:20}..."
+        else
+          printf "%s%s%s %s\n" "$COLOR_WHITE" "$key_type" "$COLOR_RESET" "${key_data:0:20}..."
+        fi
+      done <<< "$output"
+      ;;
+    add)
+      local key_content=""
+      if [[ "${remaining[0]:-}" == "-f" || "${remaining[0]:-}" == "--file" ]]; then
+        local key_file="${remaining[1]:-}"
+        [[ -z "$key_file" ]] && die "Usage: git-repo keys add -f <key-file>"
+        [[ ! -f "$key_file" ]] && die "File not found: $key_file"
+        key_content=$(<"$key_file")
+        [[ -z "$key_content" ]] && die "Key file is empty: $key_file"
+      else
+        key_content="${remaining[*]:-}"
+        [[ -z "$key_content" ]] && die "Usage: git-repo keys add [-f <key-file> | <key>]"
+      fi
+
+      printf "%s[>] Adding key to %s...%s\n" "$COLOR_YELLOW" "$GIT_REPO_ADDRESS" "$COLOR_RESET"
+      local output
+      if ! output=$(ssh "$GIT_REPO_ADDRESS" keys add "$key_content" 2>&1); then
+        die "Failed to add key: $output"
+      fi
+      printf "%s[OK] %s%s\n" "$COLOR_GREEN" "$output" "$COLOR_RESET"
+      ;;
+    remove)
+      local identifier="${remaining[*]:-}"
+      [[ -z "$identifier" ]] && die "Usage: git-repo keys remove <identifier>"
+
+      printf "%s[>] Removing key matching '%s' from %s...%s\n" "$COLOR_YELLOW" "$identifier" "$GIT_REPO_ADDRESS" "$COLOR_RESET"
+      local output
+      if ! output=$(ssh "$GIT_REPO_ADDRESS" keys remove "$identifier" 2>&1); then
+        die "Failed to remove key: $output"
+      fi
+      printf "%s[OK] %s%s\n" "$COLOR_GREEN" "$output" "$COLOR_RESET"
+      ;;
+  esac
+}
+
 handle_catfile() {
   REPO=""
   VISIBILITY=""
@@ -709,6 +834,9 @@ main() {
       ;;
     remote)
       handle_remote "$@"
+      ;;
+    keys)
+      handle_keys "$@"
       ;;
     catfile)
       handle_catfile "$@"

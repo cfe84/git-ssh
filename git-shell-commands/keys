@@ -1,0 +1,64 @@
+#!/bin/sh
+
+COMMAND="$1" # ls, add, remove
+
+AUTHORIZED_KEYS="$HOME/.ssh/authorized_keys"
+
+if [ "$COMMAND" = "ls" ]; then
+  cat "$AUTHORIZED_KEYS" 2>/dev/null || echo ""
+elif [ "$COMMAND" = "add" ]; then
+  shift
+  KEY="$*"
+  if [ -z "$KEY" ]; then
+    echo "Error: No key provided"
+    exit 1
+  fi
+  # Validate that it looks like an SSH public key
+  KEY_TYPE=$(echo "$KEY" | awk '{print $1}')
+  case "$KEY_TYPE" in
+    ssh-rsa|ssh-ed25519|ssh-dss|ecdsa-sha2-*)
+      ;;
+    *)
+      echo "Error: Invalid SSH public key format"
+      exit 1
+      ;;
+  esac
+  # Check for duplicate
+  if grep -qF "$(echo "$KEY" | awk '{print $2}')" "$AUTHORIZED_KEYS" 2>/dev/null; then
+    echo "Error: Key already exists"
+    exit 1
+  fi
+  mkdir -p "$HOME/.ssh"
+  echo "$KEY" >> "$AUTHORIZED_KEYS"
+  chmod 600 "$AUTHORIZED_KEYS"
+  echo "Key added successfully"
+elif [ "$COMMAND" = "remove" ]; then
+  shift
+  IDENTIFIER="$*"
+  if [ -z "$IDENTIFIER" ]; then
+    echo "Error: No key identifier provided"
+    exit 1
+  fi
+  if [ ! -f "$AUTHORIZED_KEYS" ]; then
+    echo "Error: No authorized keys file found"
+    exit 1
+  fi
+  # Try to match by comment or key data substring
+  MATCHES=$(grep -c "$IDENTIFIER" "$AUTHORIZED_KEYS" 2>/dev/null || true)
+  if [ "$MATCHES" -eq 0 ]; then
+    echo "Error: No matching key found"
+    exit 1
+  elif [ "$MATCHES" -gt 1 ]; then
+    echo "Error: Multiple keys match '$IDENTIFIER', be more specific"
+    exit 1
+  fi
+  # Remove the matching line
+  TEMP=$(mktemp)
+  grep -v "$IDENTIFIER" "$AUTHORIZED_KEYS" > "$TEMP"
+  mv "$TEMP" "$AUTHORIZED_KEYS"
+  chmod 600 "$AUTHORIZED_KEYS"
+  echo "Key removed successfully"
+else
+  echo "Unknown command: $COMMAND"
+  exit 1
+fi

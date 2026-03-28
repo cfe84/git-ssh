@@ -8,6 +8,13 @@ if [ "$COMMAND" = "ls" ]; then
   cat "$AUTHORIZED_KEYS" 2>/dev/null || echo ""
 elif [ "$COMMAND" = "add" ]; then
   shift
+  # Parse --folders option
+  FOLDERS=""
+  if [ "$1" = "--folders" ]; then
+    shift
+    FOLDERS="$1"
+    shift
+  fi
   KEY="$*"
   if [ -z "$KEY" ]; then
     echo "Error: No key provided"
@@ -29,7 +36,12 @@ elif [ "$COMMAND" = "add" ]; then
     exit 1
   fi
   mkdir -p "$HOME/.ssh"
-  echo "$KEY" >> "$AUTHORIZED_KEYS"
+  if [ -n "$FOLDERS" ]; then
+    RESTRICTED_SHELL="$HOME/git-shell-commands/restricted-shell"
+    printf 'command="%s %s",no-port-forwarding,no-X11-forwarding,no-agent-forwarding %s\n' "$RESTRICTED_SHELL" "$FOLDERS" "$KEY" >> "$AUTHORIZED_KEYS"
+  else
+    echo "$KEY" >> "$AUTHORIZED_KEYS"
+  fi
   chmod 600 "$AUTHORIZED_KEYS"
   echo "Key added successfully"
 elif [ "$COMMAND" = "remove" ]; then

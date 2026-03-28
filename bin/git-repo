@@ -124,14 +124,20 @@ ${COLOR_YELLOW}Commands:${COLOR_RESET}
   ${COLOR_GREEN}add <key>${COLOR_RESET}           Add a public key (inline or from file with -f)
   ${COLOR_GREEN}remove <id>${COLOR_RESET}        Remove a key by comment or key data substring
 
+${COLOR_YELLOW}Add Options:${COLOR_RESET}
+  ${COLOR_GREEN}-f, --file <path>${COLOR_RESET}              Read key from a .pub file
+  ${COLOR_GREEN}-d, --folders <folders>${COLOR_RESET}        Restrict key to specific folders (comma-separated)
+
 ${COLOR_YELLOW}Options:${COLOR_RESET}
   ${COLOR_GREEN}-h, --help${COLOR_RESET}   Show this help message
 
 ${COLOR_YELLOW}Examples:${COLOR_RESET}
-  git-repo keys list                       # List authorized SSH keys
-  git-repo keys add -f ~/.ssh/id_ed25519.pub  # Add key from file
-  git-repo keys add 'ssh-ed25519 AAAA... me@host'  # Add key inline
-  git-repo keys remove myhost              # Remove key matching 'myhost'
+  git-repo keys list                                  # List authorized SSH keys
+  git-repo keys add -f ~/.ssh/id_ed25519.pub          # Add key from file
+  git-repo keys add 'ssh-ed25519 AAAA... me@host'    # Add key inline
+  git-repo keys add -f ~/.ssh/ci.pub -d public        # Add key restricted to public
+  git-repo keys add -f ~/.ssh/ci.pub -d public,private  # Allow both folders
+  git-repo keys remove myhost                         # Remove key matching 'myhost'
 EOF
 }
 
@@ -730,34 +736,84 @@ handle_keys() {
 
       while IFS= read -r line; do
         [[ -z "$line" ]] && continue
-        local key_type key_data key_comment
-        key_type=$(echo "$line" | awk '{print $1}')
-        key_data=$(echo "$line" | awk '{print $2}')
-        key_comment=$(echo "$line" | awk '{$1=""; $2=""; print}' | xargs)
-
-        if [[ -n "$key_comment" ]]; then
-          printf "%s%s%s %s (%s)\n" "$COLOR_GREEN" "$key_comment" "$COLOR_RESET" "$COLOR_WHITE$key_type$COLOR_RESET" "${key_data:0:20}..."
-        else
-          printf "%s%s%s %s\n" "$COLOR_WHITE" "$key_type" "$COLOR_RESET" "${key_data:0:20}..."
+        local folders_display="" key_part="$line"
+        # Parse command="...restricted-shell <folders>",... prefix
+        if [[ "$line" == 'command="'* ]]; then
+          local cmd_value="${line#command=\"}"
+          cmd_value="${cmd_value%%\"*}"
+          folders_display="${cmd_value##* }"
+        # Parse environment="GIT_ALLOWED_FOLDERS=..." prefix (legacy)
+        elif [[ "$line" == 'environment="GIT_ALLOWED_FOLDERS='* ]]; then
+          local after_prefix="${line#environment=\"GIT_ALLOWED_FOLDERS=}"
+          folders_display="${after_prefix%%\"*}"
         fi
+        # Extract the actual key: find the key type token in the line
+        if [[ "$folders_display" != "" ]]; then
+          for key_type_token in ssh-rsa ssh-ed25519 ssh-dss ecdsa-sha2-nistp256 ecdsa-sha2-nistp384 ecdsa-sha2-nistp521; do
+            if [[ "$line" == *" ${key_type_token} "* ]]; then
+              key_part="${line#*" ${key_type_token} "}"
+              key_part="${key_type_token} ${key_part}"
+              break
+            fi
+          done
+        fi
+        local key_type key_data key_comment
+        key_type=$(echo "$key_part" | awk '{print $1}')
+        key_data=$(echo "$key_part" | awk '{print $2}')
+        key_comment=$(echo "$key_part" | awk '{$1=""; $2=""; print}' | xargs)
+
+        local display=""
+        if [[ -n "$key_comment" ]]; then
+          display=$(printf "%s%s%s %s (%s)" "$COLOR_GREEN" "$key_comment" "$COLOR_RESET" "$COLOR_WHITE$key_type$COLOR_RESET" "${key_data:0:20}...")
+        else
+          display=$(printf "%s%s%s %s" "$COLOR_WHITE" "$key_type" "$COLOR_RESET" "${key_data:0:20}...")
+        fi
+        if [[ -n "$folders_display" ]]; then
+          display+=$(printf " %s[folders: %s]%s" "$COLOR_YELLOW" "$folders_display" "$COLOR_RESET")
+        fi
+        printf "%s\n" "$display"
       done <<< "$output"
       ;;
     add)
       local key_content=""
-      if [[ "${remaining[0]:-}" == "-f" || "${remaining[0]:-}" == "--file" ]]; then
-        local key_file="${remaining[1]:-}"
-        [[ -z "$key_file" ]] && die "Usage: git-repo keys add -f <key-file>"
-        [[ ! -f "$key_file" ]] && die "File not found: $key_file"
-        key_content=$(<"$key_file")
-        [[ -z "$key_content" ]] && die "Key file is empty: $key_file"
-      else
-        key_content="${remaining[*]:-}"
-        [[ -z "$key_content" ]] && die "Usage: git-repo keys add [-f <key-file> | <key>]"
-      fi
+      local folders=""
+      local i=0
+      # Parse -f/--file and -d/--folders from remaining args
+      while [[ $i -lt ${#remaining[@]} ]]; do
+        case "${remaining[$i]}" in
+          -f|--file)
+            i=$((i + 1))
+            local key_file="${remaining[$i]:-}"
+            [[ -z "$key_file" ]] && die "Usage: git-repo keys add -f <key-file>"
+            [[ ! -f "$key_file" ]] && die "File not found: $key_file"
+            key_content=$(<"$key_file")
+            [[ -z "$key_content" ]] && die "Key file is empty: $key_file"
+            ;;
+          -d|--folders)
+            i=$((i + 1))
+            folders="${remaining[$i]:-}"
+            [[ -z "$folders" ]] && die "--folders requires a value"
+            ;;
+          *)
+            # Collect remaining as inline key
+            key_content="${remaining[*]:$i}"
+            i=${#remaining[@]}
+            continue
+            ;;
+        esac
+        i=$((i + 1))
+      done
 
-      printf "%s[>] Adding key to %s...%s\n" "$COLOR_YELLOW" "$GIT_REPO_ADDRESS" "$COLOR_RESET"
+      [[ -z "$key_content" ]] && die "Usage: git-repo keys add [-f <key-file> | <key>] [-d <folders>]"
+
+      local folders_msg=""
+      [[ -n "$folders" ]] && folders_msg=" (restricted to: $folders)"
+      printf "%s[>] Adding key to %s%s...%s\n" "$COLOR_YELLOW" "$GIT_REPO_ADDRESS" "$folders_msg" "$COLOR_RESET"
+      local ssh_args=("keys" "add")
+      [[ -n "$folders" ]] && ssh_args+=("--folders" "$folders")
+      ssh_args+=("$key_content")
       local output
-      if ! output=$(ssh "$GIT_REPO_ADDRESS" keys add "$key_content" 2>&1); then
+      if ! output=$(ssh "$GIT_REPO_ADDRESS" "${ssh_args[@]}" 2>&1); then
         die "Failed to add key: $output"
       fi
       printf "%s[OK] %s%s\n" "$COLOR_GREEN" "$output" "$COLOR_RESET"

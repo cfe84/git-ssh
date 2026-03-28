@@ -1,0 +1,52 @@
+#!/bin/sh
+# restricted-shell - enforces folder restrictions for SSH keys
+# Used as command= in authorized_keys:
+#   command="/home/git/git-shell-commands/restricted-shell /private/project.git" ssh-ed25519 ...
+#
+# Restricts git operations (clone/push/pull) to the specified folders.
+# Non-git commands (git-shell-commands like keys, list, etc.) pass through.
+
+ALLOWED_FOLDERS="$1"
+CMD="$SSH_ORIGINAL_COMMAND"
+
+if [ -z "$CMD" ]; then
+  exec git-shell
+fi
+
+# Check if it's a raw git command
+case "$CMD" in
+  "git-upload-pack "* | "git-receive-pack "* | "git-upload-archive "*)
+    # Extract the repo path (git sends it as: git-upload-pack '/path/to/repo.git')
+    REPO_PATH=$(echo "$CMD" | sed "s/^[^ ]* '//;s/'$//")
+
+    # Check against each allowed folder
+    ALLOWED=false
+    OLD_IFS="$IFS"
+    IFS=','
+    for folder in $ALLOWED_FOLDERS; do
+      # Normalize: ensure folder starts with /
+      case "$folder" in
+        /*) ;;
+        *) folder="/$folder" ;;
+      esac
+      case "$REPO_PATH" in
+        ${folder}|${folder}/*)
+          ALLOWED=true
+          break
+          ;;
+      esac
+    done
+    IFS="$OLD_IFS"
+
+    if [ "$ALLOWED" = false ]; then
+      echo "fatal: access denied to $REPO_PATH" >&2
+      exit 1
+    fi
+
+    exec git-shell -c "$CMD"
+    ;;
+  *)
+    # git-shell-commands (keys, list, create-repo, etc.) - pass through
+    exec git-shell -c "$CMD"
+    ;;
+esac

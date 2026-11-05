@@ -30,3 +30,4 @@ You can install the `git repo` command locally by either running `./install-bin.
    ```bash
    bash -c "`ssh $GIT_REPO_ADDRESS 'remote-install'`"
    ```
+
